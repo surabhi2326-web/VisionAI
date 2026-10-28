@@ -6,6 +6,19 @@ document.addEventListener("DOMContentLoaded", () => {
   icons();
 
   const mm = new ModelManager(cfg);
+  
+const wildwatchMode = cfg.modelType === "wildwatch";
+
+if (wildwatchMode) {
+  mm.info = {
+    classNames: cfg.classNames,
+    inputSize: "128 × 128 px",
+    type: "WildWatch 27-class Keras model",
+  };
+
+  mm.url = "Local Flask API";
+}
+
   const els = {
     status: $("model-status"),
     statusText: $("model-status-text"),
@@ -80,7 +93,8 @@ document.addEventListener("DOMContentLoaded", () => {
           error: "Failed to load",
         }[mm.state],
       ],
-      ["Model type", "Google Teachable Machine image model"],
+
+      ["Model type", mm.info?.type || "Google Teachable Machine image model"],
     ];
     if (mm.url)
       rows.push([
@@ -279,6 +293,54 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) camera.close();
   });
+  async function predictWildWatch(source) {
+    const canvas = document.createElement("canvas");
+
+    const width = source.videoWidth || source.naturalWidth || source.width;
+    const height = source.videoHeight || source.naturalHeight || source.height;
+
+    if (!width || !height) {
+      throw new Error("The selected image is not ready.");
+    }
+
+    canvas.width = width;
+    canvas.height = height;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Could not prepare the image.");
+    }
+
+    context.drawImage(source, 0, 0, width, height);
+
+    const blob = await new Promise((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.9),
+    );
+
+    if (!blob) {
+      throw new Error("Could not convert the image.");
+    }
+
+    const formData = new FormData();
+    formData.append("image", blob, "wildwatch-image.jpg");
+
+    const response = await fetch("/api/predict", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "WildWatch prediction failed.");
+    }
+
+    return {
+      predictions: data.predictions,
+      topPrediction: data.topPrediction,
+      inferenceTimeMs: data.inferenceTimeMs,
+    };
+  }
 
   /* ---------- analysis ---------- */
   function renderResult(r) {
@@ -391,7 +453,9 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const img = els.previewImg;
       if (!img.complete || !img.naturalWidth) await img.decode();
-      const r = await mm.predict(img);
+      const r = wildwatchMode
+        ? await predictWildWatch(img)
+        : await mm.predict(img);
       renderResult(r);
       renderInfo(r.inferenceTimeMs);
       history.unshift({
@@ -432,23 +496,38 @@ document.addEventListener("DOMContentLoaded", () => {
   renderInfo();
   renderHistory();
   updateControls();
-  if (!(window.tf && window.tmImage))
-    window.addEventListener("load", () => {
-      if (!window.tmImage)
-        banner(
-          "The AI libraries failed to load (CDN blocked or offline).",
-          "error",
-          { label: "Reload", fn: () => location.reload() },
-        );
-    });
-  if (cfg.defaultModelUrl)
-    loadModel(cfg.defaultModelUrl).then((ok) => {
-      if (!ok) openSettings();
-    });
-  else
-    banner(
-      "No model configured yet. Add a Teachable Machine model URL to start.",
-      "info",
-      { label: "Add model", fn: openSettings },
-    );
+  
+if (wildwatchMode) {
+  $("open-settings").hidden = true;
+  mm._set("ready");
+
+  banner("WildWatch model is connected to the Flask prediction API.", "info");
+} else if (!(window.tf && window.tmImage)) {
+  window.addEventListener("load", () => {
+    if (!window.tmImage) {
+      banner(
+        "The AI libraries failed to load (CDN blocked or offline).",
+        "error",
+        {
+          label: "Reload",
+          fn: () => location.reload(),
+        },
+      );
+    }
+  });
+} else if (cfg.defaultModelUrl) {
+  loadModel(cfg.defaultModelUrl).then((ok) => {
+    if (!ok) openSettings();
+  });
+} else {
+  banner(
+    "No model configured yet. Add a Teachable Machine model URL to start.",
+    "info",
+    {
+      label: "Add model",
+      fn: openSettings,
+    },
+  );
+}
+
 });
